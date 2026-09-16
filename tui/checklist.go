@@ -21,16 +21,30 @@ type checkItem struct {
 }
 
 func (m *Model) buildChecklist() {
+	savedTargets := toSet(m.cfg.SavedTargets)
+	savedTests := toSet(m.cfg.SavedTests)
+
 	m.items = m.items[:0]
 	for _, t := range m.targets {
-		m.items = append(m.items, checkItem{name: t, kind: itemTarget})
+		m.items = append(m.items, checkItem{name: t, kind: itemTarget, checked: savedTargets[t]})
 	}
 	for _, t := range m.tests {
-		m.items = append(m.items, checkItem{name: t, kind: itemTest})
+		m.items = append(m.items, checkItem{name: t, kind: itemTest, checked: savedTests[t]})
 	}
 	m.recomputeVisible()
 	m.cursor = 0
 	m.scroll = 0
+}
+
+func toSet(ss []string) map[string]bool {
+	if len(ss) == 0 {
+		return nil
+	}
+	s := make(map[string]bool, len(ss))
+	for _, v := range ss {
+		s[v] = true
+	}
+	return s
 }
 
 // recomputeVisible rebuilds m.visible from the current filter text. The
@@ -96,7 +110,8 @@ func (m *Model) updateChecklist(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	page := m.pageSize()
 	switch k.String() {
-	case "ctrl+c", "esc", "q":
+	case "ctrl+c", "q":
+		m.exitCode = 0
 		return m, tea.Quit
 	case "/":
 		m.filterMode = true
@@ -159,7 +174,6 @@ func (m *Model) updateChecklist(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.errMsg = ""
-		m.runMode = runBuildAndMaybeTest
 		return m.startBuild()
 	case "t":
 		if !m.hasCheckedTests() {
@@ -167,8 +181,11 @@ func (m *Model) updateChecklist(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.errMsg = ""
-		m.runMode = runTestsOnly
-		return m, tea.Quit
+		// Test-only run: libraries are already installed and current, so scope
+		// the install to just the subdirs owning the selected tests, then
+		// afterInstall runs the rpath fix and ctest.
+		m.commitRun()
+		return m.startInstall(m.installScope())
 	}
 	m.ensureCursorVisible()
 	return m, nil

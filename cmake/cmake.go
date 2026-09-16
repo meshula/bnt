@@ -118,6 +118,48 @@ func DiscoverTests(buildDir string) ([]string, error) {
 	return tests, nil
 }
 
+// addTestRE matches a ctest registration line in a CTestTestfile.cmake:
+//   add_test([=[TfDl]=] "/abs/path/testTf" ...)
+// The bracket form [=[...]=] is what cmake emits for test names.
+var addTestRE = regexp.MustCompile(`^add_test\(\[=\[([^\]]+)\]=\]`)
+
+// TestDirs walks CTestTestfile.cmake files under buildDir and returns a map of
+// test name → subdir relative to buildDir (the dir whose cmake_install.cmake
+// installs that test's binary + testenv). Tests with no owning subdir are absent.
+func TestDirs(buildDir string) (map[string]string, error) {
+	out := map[string]string{}
+	err := filepath.WalkDir(buildDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || d.Name() != "CTestTestfile.cmake" {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		rel, err := filepath.Rel(buildDir, filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			m := addTestRE.FindStringSubmatch(scanner.Text())
+			if m == nil {
+				continue
+			}
+			out[m[1]] = rel
+		}
+		return scanner.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // Build runs `cmake --build buildDir --target ... -j N`, streaming output to w.
 func Build(buildDir string, targets []string, jobs int, w io.Writer) error {
 	if len(targets) == 0 {
@@ -163,6 +205,7 @@ func FixRPath(bin, oldRPath, newRPath string) error {
 }
 
 // RunTests execs ctest with inherited stdio. Returns ctest's exit error.
+// Retained for headless mode so its behavior is byte-for-byte unchanged.
 func RunTests(buildDir, regex string, verbose bool) error {
 	args := []string{}
 	if regex != "" {
@@ -176,5 +219,44 @@ func RunTests(buildDir, regex string, verbose bool) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// TestOptions covers the interactive path's ctest needs. A nil/zero value runs
+// every test non-verbosely.
+type TestOptions struct {
+	Regex        string // -R <regex>; empty = all
+	Verbose      bool   // -V
+	RerunFailed  bool   // --rerun-failed (ignores Regex; ctest uses LastTestsFailed.log)
+	OutputOnFail bool   // --output-on-failure
+	Jobs         int    // --parallel N
+}
+
+// RunTestsStream runs ctest in buildDir streaming combined stdout/stderr to w.
+// It returns ctest's exit error: a non-nil *exec.ExitError means at least one
+// test failed. Unlike RunTests it does not touch the real terminal, so the
+// output can be captured into a viewport and the program stays alive.
+func RunTestsStream(buildDir string, o TestOptions, w io.Writer) error {
+	var args []string
+	if o.RerunFailed {
+		// --rerun-failed reruns exactly the previously-failed tests recorded in
+		// Testing/Temporary/LastTestsFailed.log, so any -R regex is ignored.
+		args = append(args, "--rerun-failed")
+	} else if o.Regex != "" {
+		args = append(args, "-R", o.Regex)
+	}
+	if o.Verbose {
+		args = append(args, "-V")
+	}
+	if o.OutputOnFail {
+		args = append(args, "--output-on-failure")
+	}
+	if o.Jobs > 0 {
+		args = append(args, "--parallel", fmt.Sprintf("%d", o.Jobs))
+	}
+	cmd := exec.Command("ctest", args...)
+	cmd.Dir = buildDir
+	cmd.Stdout = w
+	cmd.Stderr = w
 	return cmd.Run()
 }

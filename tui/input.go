@@ -8,6 +8,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/nporcino/bnt/cmake"
 )
 
 func newTextInput(placeholder, initial string) textinput.Model {
@@ -24,10 +26,10 @@ func newTextInput(placeholder, initial string) textinput.Model {
 // states; nil otherwise.
 func (m *Model) activeInput() *textinput.Model {
 	switch m.state {
-	case stateInputBuildDir:
+	case stateInputSource:
+		return &m.sourceInput
+	case stateInputBuild:
 		return &m.buildInput
-	case stateInputInstallDir:
-		return &m.installInput
 	}
 	return nil
 }
@@ -35,47 +37,83 @@ func (m *Model) activeInput() *textinput.Model {
 func (m *Model) updateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if k, ok := msg.(tea.KeyMsg); ok {
 		switch k.Type {
-		case tea.KeyEsc, tea.KeyCtrlC:
+		case tea.KeyCtrlC, tea.KeyCtrlD:
+			m.exitCode = 0
 			return m, tea.Quit
 		case tea.KeyTab:
 			m.handleTabComplete()
 			return m, nil
 		case tea.KeyEnter:
-			switch m.state {
-			case stateInputBuildDir:
-				v := strings.TrimSpace(m.buildInput.Value())
-				if v == "" {
-					m.errMsg = "build dir is required"
-					return m, nil
-				}
-				m.errMsg = ""
-				m.completions = nil
-				m.buildDir = expand(v)
-				m.buildInput.Blur()
-				m.installInput.Focus()
-				m.state = stateInputInstallDir
-				return m, nil
-			case stateInputInstallDir:
-				m.installDir = expand(strings.TrimSpace(m.installInput.Value()))
-				m.installInput.Blur()
-				m.completions = nil
-				m.state = stateDiscovering
-				return m, m.discoverCmd()
-			}
+			return m.commitInput()
 		default:
 			// Any other key invalidates the completion candidates list.
 			m.completions = nil
 		}
 	}
 
-	var cmd tea.Cmd
-	switch m.state {
-	case stateInputBuildDir:
-		m.buildInput, cmd = m.buildInput.Update(msg)
-	case stateInputInstallDir:
-		m.installInput, cmd = m.installInput.Update(msg)
+	in := m.activeInput()
+	if in == nil {
+		return m, nil
 	}
+	var cmd tea.Cmd
+	*in, cmd = in.Update(msg)
 	return m, cmd
+}
+
+// commitInput handles Enter for the two path-input states. It applies the
+// uniform prompt semantics: "?" opens the file picker, "." resolves to cwd, and
+// a path is expanded (~/, relative → abs). Committing the build dir advances
+// straight to discovery — there is no interactive install prompt.
+func (m *Model) commitInput() (tea.Model, tea.Cmd) {
+	in := m.activeInput()
+	if in == nil {
+		return m, nil
+	}
+	raw := strings.TrimSpace(in.Value())
+	m.completions = nil
+
+	// "?" → browse. Remember the invoking state so the picker returns here.
+	if raw == "?" {
+		return m.openPicker()
+	}
+
+	resolve := func(v string) string {
+		if v == "." {
+			return m.cwd
+		}
+		return expand(v)
+	}
+
+	switch m.state {
+	case stateInputSource:
+		if raw == "" {
+			m.sourceDir = m.cwd
+		} else {
+			m.sourceDir = resolve(raw)
+		}
+		m.errMsg = ""
+		m.sourceInput.Blur()
+		m.buildInput.Focus()
+		m.state = stateInputBuild
+		return m, nil
+
+	case stateInputBuild:
+		if raw == "" {
+			m.errMsg = "build dir is required (. = cwd, ? = browse)"
+			return m, nil
+		}
+		bd := resolve(raw)
+		if !cmake.IsBuildDir(bd) {
+			m.errMsg = fmt.Sprintf("%s is not a CMake build directory (no CMakeCache.txt)", bd)
+			return m, nil
+		}
+		m.errMsg = ""
+		m.buildDir = bd
+		m.buildInput.Blur()
+		m.state = stateDiscovering
+		return m, m.discoverCmd()
+	}
+	return m, nil
 }
 
 // handleTabComplete looks at the active input's current value and either
@@ -208,24 +246,18 @@ func (m *Model) viewInput() string {
 	var b strings.Builder
 	b.WriteString(TitleStyle.Render("bnt — build and test"))
 	b.WriteString("\n")
-	b.WriteString(SubtitleStyle.Render(fmt.Sprintf("source: %s", m.sourceDir)))
-	b.WriteString("\n\n")
 
 	switch m.state {
-	case stateInputBuildDir:
+	case stateInputSource:
+		b.WriteString(SectionStyle.Render("Source directory (CMakeLists.txt)"))
+		b.WriteString("\n")
+		b.WriteString(m.sourceInput.View())
+	case stateInputBuild:
+		b.WriteString(SubtitleStyle.Render(fmt.Sprintf("source: %s", m.sourceDir)))
+		b.WriteString("\n\n")
 		b.WriteString(SectionStyle.Render("CMake build directory"))
 		b.WriteString("\n")
 		b.WriteString(m.buildInput.View())
-	case stateInputInstallDir:
-		b.WriteString(SubtitleStyle.Render(fmt.Sprintf("build dir: %s", m.buildDir)))
-		b.WriteString("\n\n")
-		b.WriteString(SectionStyle.Render("Install (optional, press Enter to skip)"))
-		b.WriteString("\n")
-		b.WriteString(SubtitleStyle.Render("relative path → subdir of build to install (e.g. pxr/usd/usdProfiles)"))
-		b.WriteString("\n")
-		b.WriteString(SubtitleStyle.Render("absolute path outside build → --prefix override"))
-		b.WriteString("\n")
-		b.WriteString(m.installInput.View())
 	}
 
 	if len(m.completions) > 0 {
@@ -238,7 +270,7 @@ func (m *Model) viewInput() string {
 		b.WriteString(ErrorStyle.Render(m.errMsg))
 	}
 	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("tab: complete • enter: continue • esc: quit"))
+	b.WriteString(HelpStyle.Render("tab: complete • . = cwd • ? = browse • enter: continue • ctrl+c/ctrl+d: quit"))
 	return b.String()
 }
 
