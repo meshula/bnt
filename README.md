@@ -2,7 +2,7 @@
 
 ## OVERVIEW
 
-`bnt` is a small Go tool that wraps `cmake --build` and `ctest`. 
+`bnt` is a small tool that wraps `cmake --build` and `ctest`. 
 
 To use it, run from a CMake source directory - there's a number of command line switches to run directly, or run without parameters to use it as an interactive tool.
 
@@ -37,7 +37,7 @@ cd ~/dev/bnt
 go build -o bnt .
 ```
 
-Or use the Makefile to build and install onto your `PATH`:
+There's a convenient makefile to build and install bnt onto your `PATH`:
 
 ```sh
 make install                 # -> /usr/local/bin/bnt
@@ -45,8 +45,10 @@ make install PREFIX=~/.local # -> ~/.local/bin/bnt
 sudo make install            # if /usr/local needs root
 ```
 
-`make install` honors the standard `PREFIX` (default `/usr/local`) and `DESTDIR`
-variables, installing the binary to `$(DESTDIR)$(PREFIX)/bin/bnt`. Other targets:
+`make install` respects the standard `PREFIX` (default `/usr/local`) and `DESTDIR`
+variables, resulting in installing the binary to `$(DESTDIR)$(PREFIX)/bin/bnt`. 
+
+Other targets:
 `make` (build), `make test`, `make vet`, `make uninstall`, `make clean`.
 
 ## Usage
@@ -55,9 +57,9 @@ variables, installing the binary to `$(DESTDIR)$(PREFIX)/bin/bnt`. Other targets
 bnt [flags]
 ```
 
-With no `--build`/`--test` flags, `bnt` launches interactively. The interactive mode has interactive help.
+With no `--build`/`--test` flags, `bnt` launches interactively. The interactive mode has interactive help, and is meant to be the primary usage mode.
 
-Using the `--build` flag and/or the `--test` flag, `bnt` runs headless and exits with the underlying tool's status.
+Headless mode is useful for scripting though - using the `--build` flag and/or the `--test` flag, `bnt` runs headless and exits with the underlying tool's status.
 
 ### Flags
 
@@ -75,7 +77,7 @@ Using the `--build` flag and/or the `--test` flag, `bnt` runs headless and exits
 | `--test-bin-dir DIR` | dir holding test binaries to patch (default `<build-dir>/../tests`) |
 | `--verbose` | `ctest -V` |
 
-### Example: reproduce `bnt.sh`
+### Example: running bnt to build and test OpenUSD's usdProfiles module:
 
 ```sh
 cd ~/dev/OpenUSD
@@ -94,62 +96,74 @@ bnt --build-dir ~/local-usd/build/OpenUSD \
 The interactive flow remembers the last build/test configuration in a
 `.bnt.json` dot file in the current directory (headless runs never write it).
 On startup, if that file exists, `bnt` prints a short summary and offers to
-replay it:
+replay it. At start, you will see:
 
 ```
-remembered configuration (.bnt.json):
-build dir:   /Users/me/local-usd/build/OpenUSD
-install dir: (none)
-  target: usdProfiles
-  test:   testUsdProfiles
-use configuration from dot file? (b/t/n):
+bnt - build and test
+
+Source directory (CMakelists.txt)
+> /path/to/cwd
 ```
+And a prompt line (. means use cwd, ? opens a file browser, etc.)
 
-- `b` — replay **build + test** (straight to running, no UI).
-- `t` — replay **test-only** (skip the build, just run ctest with fix-rpath).
-- `n` — ignore the dot file and start the interactive flow.
+Hitting enter prompts for the CMake build directory, where you build exists.
 
-The summary lists up to 16 target/test lines; beyond that it ends with `…N others`.
+`bnt` then introspects the build for all the available build and test targets.
 
-### Interactive flow
-
-When there's no dot file (or you answered `n`):
-
-1. **CMake build directory** — a stdin prompt. Type a path (with `~/` expansion),
-   or press **Enter on a blank line to open a directory picker** and browse to it.
-   Cancelling the picker (`q`) exits without building.
-2. **Install?** — answer `y` to install; anything else (including blank) skips it.
-   If you answer `y`, you get an install-directory prompt with the same
-   blank-line→picker behavior.
-3. The **target/test checklist** then appears (unchanged): pick targets and tests,
-   `b` to build (and run any checked tests), `t` to run checked tests only.
-
-![Selecting some tests in the UI](image.png)
-
-The resulting test run looks like:
+This list is scrollable but for a project like OpenUSD, it will be very long.
 
 ```
-Test project /Users/nporcino/dev/crucible/Studiola/build/USD
-      Start 16: TfException
- 1/10 Test #16: TfException ......................   Passed    1.14 sec
-      Start 17: TfFileUtils
- 2/10 Test #17: TfFileUtils ......................   Passed    1.07 sec
-      Start 19: TfAtomicOfstreamWrapper
- 3/10 Test #19: TfAtomicOfstreamWrapper ..........   Passed    0.08 sec
-      Start 21: TfAnyUniquePtr
- 4/10 Test #21: TfAnyUniquePtr ...................   Passed    0.06 sec
-      Start 22: TfBits
- 5/10 Test #22: TfBits ...........................   Passed    0.06 sec
-      Start 23: TfBitUtils
- 6/10 Test #23: TfBitUtils .......................   Passed    0.06 sec
-      Start 26: TfDebugFatal_1
- 7/10 Test #26: TfDebugFatal_1 ...................   Passed    0.06 sec
-      Start 32: TfDelegate
- 8/10 Test #32: TfDelegate .......................   Passed    1.26 sec
-      Start 33: TfDiagnosticTransport
- 9/10 Test #33: TfDiagnosticTransport ............   Passed    0.08 sec
-      Start 70: TfDelegatedCountPtr
-10/10 Test #70: TfDelegatedCountPtr ..............   Passed    0.07 sec
+Select targets and tests - targets 0/656  tests 3/1100
 
-100% tests passed, 0 tests failed out of 10
+press / to filter
+build dir: /path/to/OpenUSD/build
+
+Build targets
+> [ ] TestArAdvancedAPI
+  [ ] TestArOptinalImplementation
+...
+Tests
+  [ ] ...
 ```
+
+Hit `/` to invoke a filter to bring the list down to the elements you wish to work with.
+For example, typing `/hioOpenEXR` yields:
+
+```
+Select targets and tests - targets 0/656  tests 3/1100
+
+press / to filter
+build dir: /path/to/OpenUSD/build
+
+Build targets
+> [ ] hioOpenEXR
+  [ ] hioOpenEXR_headerfiles
+  [ ] testHioOpenEXR
+
+Tests
+  [ ] testHioOpenEXR
+[1-4 / 4]
+
+type to filter * enter: apply * esc: clear
+```
+
+Hit enter, then use the space bar and arrows to select targets and tests.
+
+At this point you may build your selection with `b`, or run your selected tests with `t`. bnt will run cmake, install, and ctest as necessary, and present the results. If there were errors, `r` will re-run failed tests in verbose mode, and `v` will force rerunning tests verbosely.
+
+If all is well, you will see:
+
+```
+Results
+         TESTS PASSED  100% tests passed, 0 tests failed out of 4
+...
+```
+
+And a detailed list of tests run and timing.
+
+---
+
+This work is copyright 2026 by Nick Porcino, and licensed as BSD-2-Clause.
+
+
+
