@@ -24,3 +24,6 @@ go.work.sum
 # CMake build output
 build/
 cmake-build-*/
+
+# bnt remembered interactive configuration
+.bnt.json

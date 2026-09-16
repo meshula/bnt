@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -27,17 +28,17 @@ const (
 
 func main() {
 	var (
-		sourceDir   string
-		buildDir    string
-		installDir  string
-		buildFlags  []string
-		testFlags   []string
-		jobs        int
-		fixRPath    bool
-		verbose     bool
-		oldRPath    string
-		newRPath    string
-		testBinDir  string
+		sourceDir  string
+		buildDir   string
+		installDir string
+		buildFlags []string
+		testFlags  []string
+		jobs       int
+		fixRPath   bool
+		verbose    bool
+		oldRPath   string
+		newRPath   string
+		testBinDir string
 	)
 
 	pwd, _ := os.Getwd()
@@ -76,12 +77,104 @@ func main() {
 		}))
 	}
 
+	cwd, _ := os.Getwd()
+
+	// Offer to replay the last remembered interactive configuration. A replay
+	// is functionally identical to a headless invocation, so it reuses
+	// runHeadless — including its clear error + exit 2 if the build dir is
+	// stale/gone.
+	if s, ok := loadSaved(cwd); ok {
+		fmt.Printf("\nremembered configuration (%s):\n", savedName)
+		fmt.Print(s.summary())
+		switch promptChoice("use configuration from dot file? (b/t/n): ", "b", "t", "n") {
+		case "b": // replay build + test
+			os.Exit(runHeadless(headlessOpts{
+				BuildDir:   s.BuildDir,
+				InstallDir: s.InstallDir,
+				Targets:    s.Targets,
+				TestRegex:  joinRegex(s.Tests),
+				Tests:      s.Tests,
+				Jobs:       s.Jobs,
+				FixRPath:   s.FixRPath,
+				Verbose:    s.Verbose,
+				OldRPath:   oldRPath,
+				NewRPath:   newRPath,
+				TestBinDir: testBinDir,
+			}))
+		case "t": // replay test-only (no build, no install)
+			os.Exit(runHeadless(headlessOpts{
+				BuildDir:   s.BuildDir,
+				InstallDir: "",
+				Targets:    nil,
+				TestRegex:  joinRegex(s.Tests),
+				Tests:      s.Tests,
+				Jobs:       s.Jobs,
+				FixRPath:   s.FixRPath,
+				Verbose:    s.Verbose,
+				OldRPath:   oldRPath,
+				NewRPath:   newRPath,
+				TestBinDir: testBinDir,
+			}))
+		case "":
+			os.Exit(0) // EOF at the prompt
+		}
+		// "n" falls through to the interactive flow below.
+	}
+
+	// Build directory: plain stdin prompt; a blank line launches a filepicker.
+	line, ok := promptLine("CMake build directory (blank to browse): ")
+	if !ok {
+		os.Exit(0)
+	}
+	if strings.TrimSpace(line) == "" {
+		picked, err := tui.PickDirectory(cwd)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "filepicker:", err)
+			os.Exit(1)
+		}
+		if picked == "" {
+			fmt.Fprintln(os.Stderr, "no build directory selected")
+			os.Exit(1)
+		}
+		buildDir = picked
+	} else {
+		buildDir = abs(line)
+	}
+	if !cmake.IsBuildDir(buildDir) {
+		fmt.Fprintf(os.Stderr, "error: %s is not a CMake build directory (no CMakeCache.txt)\n", buildDir)
+		os.Exit(2)
+	}
+
+	// Install: opt in with y; a blank line at the dir prompt launches a picker.
+	installDir = ""
+	if ans, _ := promptLine("Install? (y/n): "); strings.EqualFold(strings.TrimSpace(ans), "y") {
+		iline, ok := promptLine("Install directory (blank to browse): ")
+		if !ok {
+			os.Exit(0)
+		}
+		if strings.TrimSpace(iline) == "" {
+			picked, err := tui.PickDirectory(buildDir)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "filepicker:", err)
+				os.Exit(1)
+			}
+			if picked == "" {
+				fmt.Fprintln(os.Stderr, "no install directory selected; skipping install would change intent, aborting")
+				os.Exit(1)
+			}
+			installDir = picked
+		} else {
+			installDir = abs(iline)
+		}
+	}
+
 	cfg := tui.Config{
-		SourceDir:  sourceDir,
-		BuildDir:   buildDir,
-		InstallDir: installDir,
-		Jobs:       jobs,
-		FixRPath:   fixRPath,
+		SourceDir:   sourceDir,
+		BuildDir:    buildDir,
+		InstallDir:  installDir,
+		Jobs:        jobs,
+		FixRPath:    fixRPath,
+		Preselected: true,
 	}
 	model := tui.New(cfg)
 	prog := tea.NewProgram(model, tea.WithAltScreen())
@@ -95,6 +188,24 @@ func main() {
 	if plan.Cancelled {
 		os.Exit(0)
 	}
+
+	// Remember this configuration for next time. Written before the final
+	// ctest so a passing/failing test run doesn't change what's remembered,
+	// and before the build-failed exit so a failed build still records what
+	// was selected. Guarded on BuildDir so a bare checklist-quit (which does
+	// not run anything) doesn't overwrite the dot file with an empty config.
+	if plan.BuildDir != "" {
+		_ = saveSaved(cwd, Saved{
+			BuildDir:   plan.BuildDir,
+			InstallDir: plan.InstallDir,
+			Targets:    plan.SelTargets,
+			Tests:      plan.SelTests,
+			FixRPath:   fixRPath,
+			Verbose:    verbose,
+			Jobs:       jobs,
+		})
+	}
+
 	if plan.BuildFailed {
 		emitReport(os.Stderr, "build", model.FailedBuildOutput())
 		fmt.Fprintln(os.Stderr, "build failed")
@@ -202,6 +313,41 @@ func applyRPathFix(buildDir, testBinDir string, tests []string, oldRP, newRP str
 			continue
 		}
 		_ = cmake.FixRPath(bin, oldRP, newRP)
+	}
+}
+
+// stdin is a single buffered reader over os.Stdin, shared by the prompt
+// helpers so buffering doesn't drop input between prompts.
+var stdin = bufio.NewReader(os.Stdin)
+
+// promptLine writes prompt to stdout and reads one line from stdin, trimmed of
+// its trailing newline. ok is false on EOF with no data (caller typically
+// treats that as "cancel"/exit).
+func promptLine(prompt string) (string, bool) {
+	fmt.Print(prompt)
+	line, err := stdin.ReadString('\n')
+	line = strings.TrimRight(line, "\r\n")
+	if err != nil && line == "" {
+		return "", false
+	}
+	return line, true
+}
+
+// promptChoice loops until the user enters one of valid (case-insensitive),
+// returning the lowercased choice. It returns "" on EOF.
+func promptChoice(prompt string, valid ...string) string {
+	for {
+		line, ok := promptLine(prompt)
+		if !ok {
+			return ""
+		}
+		s := strings.ToLower(strings.TrimSpace(line))
+		for _, v := range valid {
+			if s == v {
+				return s
+			}
+		}
+		fmt.Fprintf(os.Stderr, "please enter one of: %s\n", strings.Join(valid, ", "))
 	}
 }
 

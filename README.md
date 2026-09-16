@@ -30,10 +30,24 @@ Unless locally overridden, the following Provenance Node applies to all files
 
 ## Install
 
+Build in place:
+
 ```sh
 cd ~/dev/bnt
 go build -o bnt .
 ```
+
+Or use the Makefile to build and install onto your `PATH`:
+
+```sh
+make install                 # -> /usr/local/bin/bnt
+make install PREFIX=~/.local # -> ~/.local/bin/bnt
+sudo make install            # if /usr/local needs root
+```
+
+`make install` honors the standard `PREFIX` (default `/usr/local`) and `DESTDIR`
+variables, installing the binary to `$(DESTDIR)$(PREFIX)/bin/bnt`. Other targets:
+`make` (build), `make test`, `make vet`, `make uninstall`, `make clean`.
 
 ## Usage
 
@@ -74,6 +88,41 @@ bnt --build-dir ~/local-usd/build/OpenUSD \
 ```
 
 ## Interactive Tool
+
+### Remembering the last run
+
+The interactive flow remembers the last build/test configuration in a
+`.bnt.json` dot file in the current directory (headless runs never write it).
+On startup, if that file exists, `bnt` prints a short summary and offers to
+replay it:
+
+```
+remembered configuration (.bnt.json):
+build dir:   /Users/me/local-usd/build/OpenUSD
+install dir: (none)
+  target: usdProfiles
+  test:   testUsdProfiles
+use configuration from dot file? (b/t/n):
+```
+
+- `b` — replay **build + test** (straight to running, no UI).
+- `t` — replay **test-only** (skip the build, just run ctest with fix-rpath).
+- `n` — ignore the dot file and start the interactive flow.
+
+The summary lists up to 16 target/test lines; beyond that it ends with `…N others`.
+
+### Interactive flow
+
+When there's no dot file (or you answered `n`):
+
+1. **CMake build directory** — a stdin prompt. Type a path (with `~/` expansion),
+   or press **Enter on a blank line to open a directory picker** and browse to it.
+   Cancelling the picker (`q`) exits without building.
+2. **Install?** — answer `y` to install; anything else (including blank) skips it.
+   If you answer `y`, you get an install-directory prompt with the same
+   blank-line→picker behavior.
+3. The **target/test checklist** then appears (unchanged): pick targets and tests,
+   `b` to build (and run any checked tests), `t` to run checked tests only.
 
 ![Selecting some tests in the UI](image.png)
 

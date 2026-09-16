@@ -42,6 +42,12 @@ type RunPlan struct {
 	FixRPath    bool
 	BuildFailed bool
 	Cancelled   bool
+
+	// SelTargets/SelTests record the full checklist selection at exit,
+	// independent of run semantics: a failed build or a test-only run still
+	// records exactly what was checked. main persists these to the dot file.
+	SelTargets []string
+	SelTests   []string
 }
 
 type Config struct {
@@ -50,6 +56,11 @@ type Config struct {
 	InstallDir string
 	Jobs       int
 	FixRPath   bool
+
+	// Preselected skips the TUI's own build-dir/install-dir input states:
+	// main has already resolved BuildDir/InstallDir (via stdin + filepicker)
+	// so the model goes straight to discovery.
+	Preselected bool
 }
 
 type Model struct {
@@ -118,7 +129,14 @@ func New(cfg Config) *Model {
 		filterInput:  fi,
 		spinner:      sp,
 	}
-	if cmake.IsBuildDir(cfg.BuildDir) {
+	switch {
+	case cfg.Preselected:
+		// main already resolved the build/install dirs; skip the input
+		// states entirely and start discovery on Init.
+		m.buildInput.Blur()
+		m.installInput.Blur()
+		m.state = stateDiscovering
+	case cmake.IsBuildDir(cfg.BuildDir):
 		m.buildInput.Blur()
 		m.installInput.Focus()
 		m.state = stateInputInstallDir
@@ -129,6 +147,9 @@ func New(cfg Config) *Model {
 func (m *Model) Plan() RunPlan { return m.plan }
 
 func (m *Model) Init() tea.Cmd {
+	if m.state == stateDiscovering {
+		return tea.Batch(m.spinner.Tick, m.discoverCmd())
+	}
 	return tea.Batch(textinput.Blink, m.spinner.Tick)
 }
 
@@ -168,6 +189,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.plan.BuildDir = m.buildDir
 		m.plan.InstallDir = m.installDir
 		m.plan.FixRPath = m.cfg.FixRPath
+		// Record the full selection before Tests may be cleared on failure.
+		m.plan.SelTargets = m.checkedTargets()
+		m.plan.SelTests = m.checkedTests()
 		if v.err != nil {
 			m.plan.BuildFailed = true
 			m.plan.Tests = nil
@@ -197,6 +221,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.plan.InstallDir = m.installDir
 			m.plan.FixRPath = m.cfg.FixRPath
 			m.plan.Tests = m.checkedTests()
+			m.plan.SelTargets = m.checkedTargets()
+			m.plan.SelTests = m.checkedTests()
 		}
 		return next, cmd
 	case stateRunning:
