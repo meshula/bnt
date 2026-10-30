@@ -224,6 +224,21 @@ func TestResultsRerunKeys(t *testing.T) {
 			t.Fatalf("state = %v, want stateSelect", m.state)
 		}
 	})
+
+	t.Run("y copies output and stays on results", func(t *testing.T) {
+		m := newAtResults()
+		m.logBuf.WriteString("some run output\n")
+		mi, _ := m.Update(key("y"))
+		m = mi.(*Model)
+		if m.state != stateResults {
+			t.Fatalf("state = %v, want stateResults after copy", m.state)
+		}
+		// clipboard access may be unavailable in a headless environment; accept
+		// either a success or a copy-failed note, but the field must be set.
+		if m.copyStatus == "" {
+			t.Error("expected copyStatus to be set after y")
+		}
+	})
 }
 
 // TestOnTestDoneTransitions confirms pass/fail recording and results landing.

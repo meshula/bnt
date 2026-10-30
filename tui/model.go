@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -96,6 +97,7 @@ type Model struct {
 	height int
 
 	errMsg      string
+	copyStatus  string // transient results-screen feedback for the copy action
 	buildFailed bool
 	testFailed  bool
 	committed   bool // OnCommit already fired for this run
@@ -535,7 +537,16 @@ func (m *Model) updateResults(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "b":
 			m.state = stateSelect
 			m.errMsg = ""
+			m.copyStatus = ""
 			m.ensureCursorVisible()
+			return m, nil
+		case "y":
+			out := m.logBuf.String()
+			if err := clipboard.WriteAll(out); err != nil {
+				m.copyStatus = "copy failed: " + err.Error()
+			} else {
+				m.copyStatus = fmt.Sprintf("copied %d bytes to clipboard", len(out))
+			}
 			return m, nil
 		}
 	}
@@ -573,7 +584,11 @@ func (m *Model) viewResults() string {
 		b.WriteString(ErrorStyle.Render(m.errMsg))
 		b.WriteString("\n")
 	}
-	b.WriteString(HelpStyle.Render("r: rerun failed -V • v: rerun all -V • b: back • q: quit"))
+	if m.copyStatus != "" {
+		b.WriteString(SubtitleStyle.Render(m.copyStatus))
+		b.WriteString("\n")
+	}
+	b.WriteString(HelpStyle.Render("r: rerun failed -V • v: rerun all -V • y: copy output • b: back • q: quit"))
 	return b.String()
 }
 
